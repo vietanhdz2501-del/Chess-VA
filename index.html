@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#202b36">
+<title>Cờ vua Online</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 16px 12px 28px;
+  background: #202b36; color: #f7f8fa;
+  font-family: Arial, sans-serif; text-align: center;
+}
+main { width: min(100%, 540px); margin: 0 auto; }
+h1 { font-size: 25px; margin: 8px 0 16px; }
+.panel { background: #2d3b49; border-radius: 14px; padding: 13px; margin: 12px 0; }
+.row { display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; }
+input {
+  width: min(190px, 52vw); min-height: 44px; padding: 10px;
+  border: 1px solid #718096; border-radius: 9px;
+  background: #17212b; color: white; text-align: center;
+  font-size: 17px; text-transform: uppercase;
+}
+button {
+  min-height: 42px; padding: 10px 14px; border: 0; border-radius: 9px;
+  background: #247ac2; color: white; font-size: 15px; font-weight: 700;
+}
+button:disabled { opacity: .45; }
+button.secondary { background: #526273; }
+#status { font-size: 17px; font-weight: 700; min-height: 24px; }
+#substatus { color: #c7d2de; font-size: 13px; margin-top: 6px; }
+#roomInfo { font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+#board {
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
+  width: min(94vw, 500px); aspect-ratio: 1; margin: 12px auto;
+  border: 4px solid #111820; border-radius: 3px; overflow: hidden;
+  touch-action: manipulation;
+}
+.square {
+  display: flex; align-items: center; justify-content: center; position: relative;
+  min-width: 0; font-size: clamp(27px, 9vw, 55px);
+  user-select: none; -webkit-user-select: none; cursor: pointer;
+}
+.light { background: #f0d9b5; }
+.dark { background: #b58863; }
+.square.selected { background: #e6d64b !important; }
+.square.last { box-shadow: inset 0 0 0 3px #facc15; }
+.square.target::after {
+  content: ""; width: 25%; aspect-ratio: 1; border-radius: 50%;
+  background: #176b3a; opacity: .72; position: absolute; pointer-events: none;
+}
+.square.capture::after {
+  width: 82%; background: transparent; border: 4px solid #176b3a; opacity: .7;
+}
+.white-piece { color: #fffdf4; text-shadow: 1px 2px 2px #171717, -1px -1px 1px #555; }
+.black-piece { color: #171717; text-shadow: 0 1px 1px #eee; }
+#moves { text-align: left; max-height: 130px; overflow-y: auto; line-height: 1.7; overflow-wrap: anywhere; }
+#message { min-height: 20px; color: #ffd166; font-size: 14px; margin: 8px 0; }
+.small { color: #bdc8d3; font-size: 12px; line-height: 1.5; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>♟ CỜ VUA ONLINE ♟</h1>
+
+  <section class="panel">
+    <div class="row">
+      <button id="createBtn">Tạo phòng mới</button>
+      <input id="roomInput" maxlength="6" placeholder="MÃ PHÒNG" autocomplete="off" aria-label="Mã phòng">
+      <button id="joinBtn" class="secondary">Vào phòng</button>
+    </div>
+    <div id="roomInfo" style="margin-top:10px">Đang kết nối...</div>
+    <div class="row" style="margin-top:8px">
+      <button id="copyBtn" class="secondary" disabled>Copy mã phòng</button>
+      <button id="leaveBtn" class="secondary" disabled>Rời phòng</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div id="status">Đang khởi tạo...</div>
+    <div id="substatus">Mỗi phòng dành cho 2 người chơi.</div>
+  </section>
+
+  <div id="board" aria-label="Bàn cờ vua"></div>
+
+  <section class="panel">
+    <div class="row">
+      <button id="flipBtn" class="secondary">⇅ Đảo bàn cờ</button>
+    </div>
+    <p class="small">Đây là ván chơi trực tuyến: không có chức năng tự ý đi lại nước đã đồng bộ.</p>
+  </section>
+
+  <section class="panel">
+    <b>Lịch sử nước đi</b>
+    <div id="moves">Chưa có nước đi.</div>
+  </section>
+  <div id="message" role="status"></div>
+  <p class="small">Cần Internet. Cả hai người phải mở cùng địa chỉ trang web và nhập chung mã phòng.</p>
+</main>
+
+<script type="module">
+import { Chess } from "https://esm.sh/chess.js@1.4.0";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
+import {
+  getDatabase, ref, get, set, onValue, runTransaction
+} from "https://www.gstatic.com/firebasejs/13.2.0/firebase-database.js";
+
+// 1) Thay các giá trị THAY_BANG_... bằng Firebase config của bạn.
+// Lấy tại Firebase Console > Project settings > Your apps > SDK setup.
+const firebaseConfig = {
+  apiKey: "AIzaSyD82N_Gyjl2BKkRNP8MiLoUGk7c45PsAYs",
+  authDomain: "chess-va-b2a04.firebaseapp.com",
+  databaseURL: "https://chess-va-b2a04-default-rtdb.firebaseio.com",
+  projectId: "chess-va-b2a04",
+  storageBucket: "chess-va-b2a04.firebasestorage.app",
+  messagingSenderId: "775758535645",
+  appId: "1:775758535645:web:70d998b2f97a2c16e8b434",
+  measurementId: "G-B23E7JJ1FK"
+};
+
+const $ = id => document.getElementById(id);
+const chess = new Chess();
+let app, auth, db, uid = null;
+let roomCode = null, roomData = null, stopRoomListener = null;
+let selected = null, legalMoves = [], flipped = false, busy = false;
+
+function message(text, isError = false) {
+  $("message").textContent = text || "";
+  $("message").style.color = isError ? "#ff9b9b" : "#ffd166";
+}
+function setButtonsEnabled(enabled) {
+  $("createBtn").disabled = !enabled;
+  $("joinBtn").disabled = !enabled;
+}
+
+const configReady = !Object.values(firebaseConfig).some(v =>
+  typeof v !== "string" || !v || v.includes("THAY_BANG")
+);
+
+if (!configReady) {
+  $("status").textContent = "Cần cấu hình Firebase trước khi chơi.";
+  $("roomInfo").textContent = "Hãy điền firebaseConfig trong mã HTML theo hướng dẫn.";
+  setButtonsEnabled(false);
+} else {
+  try {
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getDatabase(app);
+    $("status").textContent = "Đang đăng nhập ẩn danh...";
+    signInAnonymously(auth).then(credential => {
+      uid = credential.user.uid;
+      $("status").textContent = "Đã kết nối. Hãy tạo phòng hoặc nhập mã phòng.";
+      $("roomInfo").textContent = "Bạn chưa tham gia phòng nào.";
+      setButtonsEnabled(true);
+      render();
+    }).catch(error => {
+      console.error(error);
+      $("status").textContent = "Không đăng nhập được Firebase.";
+      message("Kiểm tra đã bật Anonymous Authentication và cấu hình Firebase chưa. " + error.message, true);
+      setButtonsEnabled(false);
+    });
+  } catch (error) {
+    console.error(error);
+    $("status").textContent = "Lỗi cấu hình Firebase.";
+    message(error.message, true);
+    setButtonsEnabled(false);
+  }
+}
+
+function makeCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+function myColor() {
+  if (!roomData || !roomData.players || !uid) return null;
+  if (roomData.players.white === uid) return "w";
+  if (roomData.players.black === uid) return "b";
+  return null;
+}
+
+function canPlay() {
+  const color = myColor();
+  return !!(roomCode && roomData && roomData.players && roomData.players.white &&
+    roomData.players.black && roomData.game && color &&
+    roomData.game.turnUid === uid && chess.turn() === color && !chess.isGameOver() && !busy);
+}
+
+async function createRoom() {
+  if (!uid || busy) return;
+  busy = true; setButtonsEnabled(false); message("Đang tạo phòng...");
+  try {
+    let chosen = null;
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const candidate = makeCode();
+      const seatRef = ref(db, `rooms/${candidate}/players/white`);
+      const tx = await runTransaction(seatRef, current => current == null ? uid : undefined, { applyLocally: false });
+      if (tx.committed && tx.snapshot.val() === uid) { chosen = candidate; break; }
+    }
+    if (!chosen) throw new Error("Không tạo được mã phòng. Hãy thử lại.");
+
+    const initial = new Chess();
+    await set(ref(db, `rooms/${chosen}/game`), {
+      fen: initial.fen(), moves: [], turnUid: uid,
+      lastMove: null, createdAt: Date.now()
+    });
+    busy = false;
+    await enterRoom(chosen);
+    message("Đã tạo phòng. Gửi mã cho người chơi còn lại.");
+  } catch (error) {
+    console.error(error); busy = false; setButtonsEnabled(true);
+    message("Không tạo được phòng: " + error.message, true);
+  }
+}
+
+async function joinRoom() {
+  if (!uid || busy) return;
+  const code = $("roomInput").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!/^[A-Z0-9]{6}$/.test(code)) {
+    message("Mã phòng phải gồm 6 ký tự.", true); return;
+  }
+  busy = true; setButtonsEnabled(false); message("Đang tìm phòng...");
+  try {
+    const roomSnap = await get(ref(db, `rooms/${code}`));
+    const data = roomSnap.val();
+    if (!data || !data.players || !data.players.white || !data.game) {
+      throw new Error("Không tìm thấy phòng này.");
+    }
+    if (data.players.white === uid) {
+      throw new Error("Bạn đang là chủ phòng trên thiết bị này.");
+    }
+    const blackRef = ref(db, `rooms/${code}/players/black`);
+    const tx = await runTransaction(blackRef, current => {
+      if (current == null || current === uid) return uid;
+      return undefined;
+    }, { applyLocally: false });
+    if (!tx.committed || tx.snapshot.val() !== uid) {
+      throw new Error("Phòng đã có đủ 2 người chơi.");
+    }
+    busy = false;
+    await enterRoom(code);
+    message("Đã vào phòng với quân Đen.");
+  } catch (error) {
+    console.error(error); busy = false; setButtonsEnabled(true);
+    message(error.message || "Không vào được phòng.", true);
+  }
+}
+
+async function enterRoom(code) {
+  if (stopRoomListener) stopRoomListener();
+  roomCode = code;
+  roomData = null;
+  selected = null; legalMoves = [];
+  $("roomInput").value = code;
+  $("copyBtn").disabled = false;
+  $("leaveBtn").disabled = false;
+  $("roomInfo").textContent = `Mã phòng: ${code} — đang đồng bộ...`;
+
+  stopRoomListener = onValue(ref(db, `rooms/${code}`), snapshot => {
+    const data = snapshot.val();
+    if (!data || !data.game || !data.game.fen) {
+      message("Phòng không còn dữ liệu ván cờ.", true); return;
+    }
+    roomData = data;
+    try { chess.load(data.game.fen); }
+    catch (error) { message("Dữ liệu ván cờ không hợp lệ.", true); return; }
+    selected = null; legalMoves = [];
+    render();
+  }, error => {
+    console.error(error);
+    message("Mất quyền truy cập phòng: " + error.message, true);
+  });
+}
+
+function leaveRoom() {
+  if (stopRoomListener) stopRoomListener();
+  stopRoomListener = null; roomCode = null; roomData = null;
+  selected = null; legalMoves = []; busy = false;
+  chess.reset();
+  $("copyBtn").disabled = true;
+  $("leaveBtn").disabled = true;
+  $("roomInfo").textContent = "Bạn đã rời phòng trên thiết bị này.";
+  $("status").textContent = "Hãy tạo phòng hoặc nhập mã phòng.";
+  setButtonsEnabled(!!uid); message(""); render();
+}
+
+async function submitMove(from, to, promotion = "q") {
+  if (!canPlay()) { message("Chưa đến lượt bạn hoặc phòng chưa đủ 2 người.", true); return; }
+  busy = true; selected = null; legalMoves = []; render();
+  try {
+    const players = roomData.players;
+    const gameRef = ref(db, `rooms/${roomCode}/game`);
+    const tx = await runTransaction(gameRef, current => {
+      if (!current || current.turnUid !== uid || !current.fen) return;
+      const temp = new Chess();
+      try { temp.load(current.fen); } catch { return; }
+      const color = players.white === uid ? "w" : players.black === uid ? "b" : null;
+      if (!color || temp.turn() !== color) return;
+      let played;
+      try { played = temp.move({ from, to, promotion }); }
+      catch { return; }
+      if (!played) return;
+      const nextUid = temp.turn() === "w" ? players.white : players.black;
+      if (!nextUid) return;
+      const oldMoves = Array.isArray(current.moves) ? current.moves : [];
+      return {
+        fen: temp.fen(),
+        moves: [...oldMoves, { san: played.san, color: played.color, from: played.from, to: played.to }],
+        turnUid: nextUid,
+        lastMove: { from: played.from, to: played.to },
+        updatedAt: Date.now()
+      };
+    }, { applyLocally: false });
+
+    if (!tx.committed) message("Nước đi chưa được chấp nhận. Có thể đối thủ vừa đi hoặc không còn lượt của bạn.", true);
+    else message("");
+  } catch (error) {
+    console.error(error); message("Không gửi được nước đi: " + error.message, true);
+  } finally {
+    busy = false;
+    render();
+  }
+}
+
+function clickSquare(square) {
+  if (!canPlay()) return;
+  const piece = chess.get(square);
+  if (!selected) {
+    if (piece && piece.color === chess.turn()) {
+      selected = square;
+      legalMoves = chess.moves({ square, verbose: true });
+    }
+  } else {
+    const candidate = legalMoves.find(m => m.to === square);
+    if (candidate) {
+      let promotion = "q";
+      if (candidate.promotion) {
+        const answer = prompt("Phong cấp: q = Hậu, r = Xe, b = Tượng, n = Mã", "q");
+        promotion = ["q", "r", "b", "n"].includes((answer || "q").toLowerCase())
+          ? answer.toLowerCase() : "q";
+      }
+      submitMove(selected, square, promotion);
+      return;
+    }
+    if (piece && piece.color === chess.turn()) {
+      selected = square;
+      legalMoves = chess.moves({ square, verbose: true });
+    } else {
+      selected = null; legalMoves = [];
+    }
+  }
+  render();
+}
+
+function render() {
+  const board = $("board");
+  board.innerHTML = "";
+  const files = flipped ? "hgfedcba" : "abcdefgh";
+  const ranks = flipped ? "12345678" : "87654321";
+  const last = roomData && roomData.game ? roomData.game.lastMove : null;
+
+  for (const rank of ranks) {
+    for (const file of files) {
+      const square = file + rank;
+      const piece = chess.get(square);
+      const el = document.createElement("div");
+      const light = (file.charCodeAt(0) - 97 + Number(rank)) % 2 === 1;
+      el.className = "square " + (light ? "light" : "dark");
+      if (selected === square) el.classList.add("selected");
+      const target = legalMoves.find(m => m.to === square);
+      if (target) el.classList.add(piece ? "capture" : "target");
+      if (last && (last.from === square || last.to === square)) el.classList.add("last");
+      if (piece) {
+        const symbols = {
+          w: { k:"♔", q:"♕", r:"♖", b:"♗", n:"♘", p:"♙" },
+          b: { k:"♚", q:"♛", r:"♜", b:"♝", n:"♞", p:"♟" }
+        };
+        el.textContent = symbols[piece.color][piece.type];
+        el.classList.add(piece.color === "w" ? "white-piece" : "black-piece");
+      }
+      el.addEventListener("click", () => clickSquare(square));
+      board.appendChild(el);
+    }
+  }
+
+  const color = myColor();
+  if (!roomCode) {
+    $("status").textContent = uid ? "Hãy tạo phòng hoặc nhập mã phòng." : "Đang kết nối...";
+    $("substatus").textContent = "Chưa tham gia ván trực tuyến.";
+  } else if (!roomData || !roomData.game) {
+    $("status").textContent = "Đang đồng bộ phòng...";
+  } else {
+    const players = roomData.players || {};
+    const seat = color === "w" ? "Trắng" : color === "b" ? "Đen" : "Khách";
+    $("roomInfo").textContent = `Phòng ${roomCode} · Bạn cầm quân ${seat} · Trắng: ${players.white ? "đã vào" : "trống"} · Đen: ${players.black ? "đã vào" : "đang chờ"}`;
+    if (!players.black) {
+      $("status").textContent = "Đang chờ người chơi thứ hai...";
+    } else if (chess.isCheckmate()) {
+      $("status").textContent = "Chiếu hết! " + (chess.turn() === "w" ? "Đen" : "Trắng") + " thắng.";
+    } else if (chess.isDraw()) {
+      $("status").textContent = "Ván cờ hòa.";
+    } else if (color && chess.turn() === color && roomData.game.turnUid === uid) {
+      $("status").textContent = "Đến lượt bạn — quân " + (color === "w" ? "Trắng" : "Đen") + (chess.isCheck() ? " · Bạn đang bị chiếu!" : "");
+    } else {
+      $("status").textContent = "Đang chờ đối thủ đi..." + (chess.isCheck() ? " · Vua đang bị chiếu." : "");
+    }
+    $("substatus").textContent = "Nước đi được đồng bộ tự động khi có Internet.";
+  }
+
+  const moves = roomData && roomData.game && Array.isArray(roomData.game.moves)
+    ? roomData.game.moves : [];
+  if (!moves.length) $("moves").textContent = "Chưa có nước đi.";
+  else {
+    const chunks = [];
+    for (let i = 0; i < moves.length; i += 2) {
+      chunks.push(`${Math.floor(i / 2) + 1}. ${moves[i].san}${moves[i + 1] ? "  " + moves[i + 1].san : ""}`);
+    }
+    $("moves").textContent = chunks.join("   |   ");
+  }
+}
+
+$("createBtn").addEventListener("click", createRoom);
+$("joinBtn").addEventListener("click", joinRoom);
+$("leaveBtn").addEventListener("click", leaveRoom);
+$("flipBtn").addEventListener("click", () => { flipped = !flipped; render(); });
+$("copyBtn").addEventListener("click", async () => {
+  if (!roomCode) return;
+  try {
+    await navigator.clipboard.writeText(roomCode);
+    message("Đã sao chép mã phòng: " + roomCode);
+  } catch {
+    prompt("Sao chép mã phòng này:", roomCode);
+  }
+});
+$("roomInput").addEventListener("input", event => {
+  event.target.value = event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+});
+
+render();
+</script>
+</body>
+</html>
